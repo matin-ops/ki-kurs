@@ -395,14 +395,320 @@
       form.reset();
     });
   </script>
-<link href="https://cdn.jsdelivr.net/npm/@n8n/chat/dist/style.css" rel="stylesheet" />
-<script type="module">
-	import { createChat } from 'https://cdn.jsdelivr.net/npm/@n8n/chat/dist/chat.bundle.es.js';
 
-	createChat({
-		webhookUrl: 'YOUR_PRODUCTION_WEBHOOK_URL'
-	});
+<!-- SIMPLE CHAT WIDGET (no imports) -->
+<div id="simple-chat-root"></div>
+
+<script>
+  // --- Minimal "createChat" you can call like the n8n one ---
+  function createChat(options) {
+    if (!options || !options.webhookUrl) throw new Error("createChat: webhookUrl is required");
+
+    const cfg = {
+      webhookUrl: options.webhookUrl,
+      target: options.target || "#simple-chat-root",
+      title: options.title || "Assistant",
+      subtitle: options.subtitle || "Ask me anything",
+      initialMessages: options.initialMessages || ["Hi 👋", "How can I help you today?"],
+      metadata: options.metadata || {},
+      storageKey: options.storageKey || "simple_chat_session_v1",
+    };
+
+    const mount = document.querySelector(cfg.target);
+    if (!mount) throw new Error("createChat: target not found: " + cfg.target);
+
+    // Session
+    const existingSession = localStorage.getItem(cfg.storageKey);
+    const sessionId = existingSession || (crypto?.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random());
+    if (!existingSession) localStorage.setItem(cfg.storageKey, sessionId);
+
+    // Helpers
+    const esc = (s) => String(s).replace(/[&<>"']/g, (m) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
+    }[m]));
+
+    const nowTime = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+    // UI
+    mount.innerHTML = `
+      <style>
+        .scw-launcher{
+          position:fixed; right:18px; bottom:18px; z-index:999999;
+          width:54px; height:54px; border-radius:999px; border:0;
+          background:linear-gradient(135deg,#6366f1,#10b981);
+          box-shadow:0 14px 35px rgba(0,0,0,.35);
+          cursor:pointer; display:grid; place-items:center;
+        }
+        .scw-launcher:active{ transform:translateY(1px); }
+        .scw-launcher svg{ width:24px; height:24px; fill:#fff; }
+
+        .scw{
+          position:fixed; right:18px; bottom:84px; z-index:999999;
+          width:min(380px,calc(100vw - 36px));
+          height:min(560px,calc(100vh - 140px));
+          border-radius:16px;
+          background:rgba(15,23,42,.92);
+          border:1px solid rgba(255,255,255,.12);
+          box-shadow:0 22px 70px rgba(0,0,0,.55);
+          overflow:hidden;
+          display:none;
+          font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+          color:rgba(255,255,255,.92);
+          backdrop-filter: blur(10px);
+        }
+        .scw.open{ display:flex; flex-direction:column; }
+
+        .scw-header{
+          padding:12px 12px 10px;
+          border-bottom:1px solid rgba(255,255,255,.10);
+          display:flex; align-items:center; justify-content:space-between; gap:10px;
+        }
+        .scw-title{ font-weight:700; font-size:14px; line-height:1.1; }
+        .scw-sub{ font-size:12px; opacity:.70; margin-top:2px; }
+        .scw-actions{ display:flex; gap:8px; }
+        .scw-btn{
+          border:1px solid rgba(255,255,255,.14);
+          background:rgba(255,255,255,.06);
+          color:rgba(255,255,255,.92);
+          border-radius:10px;
+          padding:6px 9px;
+          font-size:12px;
+          cursor:pointer;
+        }
+        .scw-btn:hover{ background:rgba(255,255,255,.09); }
+
+        .scw-body{
+          padding:12px;
+          flex:1;
+          overflow:auto;
+          display:flex;
+          flex-direction:column;
+          gap:10px;
+        }
+        .scw-bubble{
+          max-width:85%;
+          padding:10px 12px;
+          border-radius:14px;
+          line-height:1.35;
+          font-size:13px;
+          white-space:pre-wrap;
+          word-wrap:break-word;
+        }
+        .scw-bot{
+          background:rgba(255,255,255,.08);
+          border:1px solid rgba(255,255,255,.10);
+          align-self:flex-start;
+        }
+        .scw-user{
+          background:rgba(99,102,241,.22);
+          border:1px solid rgba(99,102,241,.30);
+          align-self:flex-end;
+        }
+        .scw-meta{
+          margin-top:6px;
+          font-size:11px;
+          opacity:.65;
+        }
+        .scw-footer{
+          padding:10px;
+          border-top:1px solid rgba(255,255,255,.10);
+          display:flex;
+          gap:8px;
+          align-items:flex-end;
+        }
+        .scw-input{
+          flex:1;
+          min-height:40px;
+          max-height:110px;
+          resize:none;
+          border-radius:12px;
+          border:1px solid rgba(255,255,255,.14);
+          background:rgba(2,6,23,.35);
+          color:rgba(255,255,255,.92);
+          padding:10px 10px;
+          font-size:13px;
+          outline:none;
+        }
+        .scw-send{
+          width:44px; height:44px;
+          border-radius:12px; border:0;
+          background:linear-gradient(135deg,#6366f1,#10b981);
+          cursor:pointer;
+          display:grid; place-items:center;
+          box-shadow:0 10px 25px rgba(0,0,0,.25);
+        }
+        .scw-send:disabled{ opacity:.6; cursor:not-allowed; }
+        .scw-send svg{ width:18px; height:18px; fill:#fff; }
+        .scw-status{ font-size:11px; opacity:.70; padding:0 12px 10px; }
+      </style>
+
+      <button class="scw-launcher" aria-label="Open chat">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 4h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9l-5 4v-4H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm3 6h10a1 1 0 1 0 0-2H7a1 1 0 0 0 0 2zm0 4h7a1 1 0 1 0 0-2H7a1 1 0 0 0 0 2z"/>
+        </svg>
+      </button>
+
+      <div class="scw" role="dialog" aria-label="Chat">
+        <div class="scw-header">
+          <div>
+            <div class="scw-title">${esc(cfg.title)}</div>
+            <div class="scw-sub">${esc(cfg.subtitle)}</div>
+          </div>
+          <div class="scw-actions">
+            <button class="scw-btn scw-clear" type="button">Clear</button>
+            <button class="scw-btn scw-close" type="button">Close</button>
+          </div>
+        </div>
+
+        <div class="scw-body"></div>
+        <div class="scw-status" aria-live="polite"></div>
+
+        <div class="scw-footer">
+          <textarea class="scw-input" rows="1" placeholder="Type your message..."></textarea>
+          <button class="scw-send" type="button" aria-label="Send">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M2 21l21-9L2 3v7l15 2-15 2v7z"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+    `;
+
+    const launcher = mount.querySelector(".scw-launcher");
+    const panel = mount.querySelector(".scw");
+    const body = mount.querySelector(".scw-body");
+    const input = mount.querySelector(".scw-input");
+    const sendBtn = mount.querySelector(".scw-send");
+    const closeBtn = mount.querySelector(".scw-close");
+    const clearBtn = mount.querySelector(".scw-clear");
+    const status = mount.querySelector(".scw-status");
+
+    function addMessage(role, text) {
+      const bubble = document.createElement("div");
+      bubble.className = "scw-bubble " + (role === "user" ? "scw-user" : "scw-bot");
+      bubble.innerHTML = `${esc(text)}<div class="scw-meta">${role === "user" ? "You" : cfg.title} · ${nowTime()}</div>`;
+      body.appendChild(bubble);
+      body.scrollTop = body.scrollHeight;
+    }
+
+    function setStatus(s) {
+      status.textContent = s || "";
+    }
+
+    // Seed initial messages once per session (simple approach)
+    // If you want persistence of messages, we can add it — but keeping this minimal.
+    cfg.initialMessages.forEach((m) => addMessage("bot", m));
+
+    function open() {
+      panel.classList.add("open");
+      setTimeout(() => input.focus(), 50);
+    }
+    function close() {
+      panel.classList.remove("open");
+      setStatus("");
+    }
+    function toggle() {
+      panel.classList.contains("open") ? close() : open();
+    }
+
+    launcher.addEventListener("click", toggle);
+    closeBtn.addEventListener("click", close);
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && panel.classList.contains("open")) close();
+    });
+
+    clearBtn.addEventListener("click", () => {
+      body.innerHTML = "";
+      cfg.initialMessages.forEach((m) => addMessage("bot", m));
+      setStatus("Cleared.");
+      setTimeout(() => setStatus(""), 800);
+    });
+
+    async function sendMessage() {
+      const text = input.value.trim();
+      if (!text) return;
+
+      addMessage("user", text);
+      input.value = "";
+      input.style.height = "auto";
+
+      sendBtn.disabled = true;
+      setStatus("Thinking…");
+
+      try {
+        // n8n-friendly payload:
+        // - chatInput: what user typed
+        // - sessionId: stable session
+        // - metadata: optional context
+        const res = await fetch(cfg.webhookUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chatInput: text,
+            sessionId,
+            metadata: cfg.metadata
+          }),
+        });
+
+        const ct = (res.headers.get("content-type") || "").toLowerCase();
+        let replyText = "";
+
+        if (ct.includes("application/json")) {
+          const data = await res.json();
+          // Common patterns
+          replyText =
+            (typeof data === "string" && data) ||
+            data.text ||
+            data.message ||
+            data.output ||
+            data.answer ||
+            (data.data && (data.data.text || data.data.message)) ||
+            JSON.stringify(data, null, 2);
+        } else {
+          replyText = await res.text();
+        }
+
+        replyText = (replyText || "").trim();
+        if (!replyText) replyText = "(No response text returned.)";
+
+        addMessage("bot", replyText);
+        setStatus("");
+      } catch (err) {
+        addMessage("bot", "⚠️ Error calling webhook. Check the URL + CORS + n8n response settings.");
+        setStatus("");
+        console.error(err);
+      } finally {
+        sendBtn.disabled = false;
+        input.focus();
+      }
+    }
+
+    sendBtn.addEventListener("click", sendMessage);
+
+    // Enter to send, Shift+Enter newline
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+
+    // Auto-grow textarea
+    input.addEventListener("input", () => {
+      input.style.height = "auto";
+      input.style.height = Math.min(input.scrollHeight, 110) + "px";
+    });
+
+    // Return an API (optional)
+    return { open, close, toggle };
+  }
+
+  // --- Your call (same style as n8n's) ---
+  createChat({
+    webhookUrl: “https://mindsofcreators.app.n8n.cloud/webhook/fc8a84f5-7d82-450b-b959-215beb70d83d/chat“
+  });
 </script>
+
 
 </body>
 </html>
